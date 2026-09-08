@@ -27,7 +27,7 @@ var gravity : float = 980
 @onready var label : Label = $Label
 var air_jump:int = 1
 var jump_count:int= 0
-var coyote_able = false
+var cayote_able = false
 # 缓冲跳参数/计时属于角色手感, 放 player 以便跨状态共享
 @export var buffer_time :float = 0.2
 var buffer_timer :float = 0.0
@@ -58,7 +58,8 @@ func _physics_process(delta: float) -> void:
 	velocity.y += gravity*gravity_multiplier*delta
 	velocity.y = velocity.y if velocity.y<max_fall_velocity else max_fall_velocity
 	# 缓冲跳计时在 player 递减(固定 60Hz, 与状态机无关)
-	buffer_timer = buffer_timer - delta if buffer_timer > 0.0 else 0.0
+	if buffer_timer>0.0:
+		buffer_timer = buffer_timer - delta if buffer_timer > 0.0 else 0.0
 	change_state(current_state.physics_process(delta))
 	move_and_slide()
 	pass

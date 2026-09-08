@@ -1,105 +1,121 @@
 class_name PlayerStateAir
 extends PlayerState
 
-#region child state
+#region /// child state
 @onready var rise: PlayerStateRise = %Rise
 @onready var fall: PlayerStateFall = %Fall
-var current_state:PlayerState 
-var coyote_time:float = 0.125
-var coyote_timer:float
-# buffer_time/buffer_timer 已上收到 player(角色手感参数, 跨状态共享)
-#endregion 
+#endregion
+#region /// local var
+@export var cayote_time:float = 0.125
+var cayote_timer : float = 0.0
+#endregion
+
+var current_state:PlayerState
 
 func init()->void:
 	rise.player = player
 	fall.player = player
 	pass
-	
+
 func enter()->void:
 	current_state = null
-	if player.coyote_able :
-		coyote_timer=coyote_time
-	else :
-		coyote_timer = 0
+	# cayote_able 由 Ground 在真正走下平台那一刻置位
+	if player.cayote_able:
+		cayote_timer = cayote_time
+	else:
+		cayote_timer = 0.0
 	switchState()
 	pass
-	
+
 func exit()->void:
-	# 离开空中状态时退出当前子状态, 与 Ground.exit 对称:
-	# Fall.exit 会复位重力倍率, 不退出会导致 1.165 泄漏到地面/上升阶段
+	# 离开空中: 退出子状态(Fall.exit 复位重力倍率), 并复位跳跃预算
 	if current_state:
 		current_state.exit()
 	current_state = null
+	player.jump_count = 0
+	player.cayote_able = false
 	pass
 
 func handle_input(_event:InputEvent)->PlayerState:
-	if handle_jump(_event):
+	if _event.is_action_pressed("jump"):
+		if not cayote_jump() and not air_jump():
+			# cayote/二段跳都用完 -> 武装落地缓冲(松键不取消, 落地时结算高度)
+			player.buffer_timer = player.buffer_time
+		player.cayote_able = false
+		switchState()
 		return next_state
-	current_state.handle_input(_event)
+	if _event.is_action_released("jump"):
+		# 可变跳高: 早松早矮
+		player.velocity.y *= 0.6
+		return next_state
+	if current_state:
+		current_state.handle_input(_event)
 	return next_state
 
 func process(_delta: float) -> PlayerState:
-	# 落地判定放回 process(跟随输入帧, 手感更跟手):
-	# velocity.y>=0 门控是同步赋值不会滞后, 起跳后即使读到旧 floor 也不会误判落地/回弹
-	if player.is_on_floor() and player.velocity.y>=0:
-		player.jump_count=0
-		# 缓冲跳只在"不打算下蹲"时触发: 若按着下方向(想落地蹲下/穿单向平台),
-		# 不在这里抢先起跳, 取消缓冲并交给落地后的 Ground/crouch 决定下穿
-		if player.buffer_timer>0:
-			# 方案D: 落地缓冲跳 = 落地瞬间"重新按跳"(与普通起跳手感一致, 无帧级歧义):
-			# 有缓冲且没按 ↓ 就触发; 触发瞬间若键已松开(短按)则立即按可变跳高规则给矮跳(×0.6),
-			# 仍按住则全高起跳、后续松键再截断 —— 短按=矮跳, 长按=可控全高
+	if cayote_timer > 0.0:
+		cayote_timer = cayote_timer - _delta if cayote_timer > _delta else 0.0
+	# 落地判定: v.y>=0 门控是同步赋值不滞后,
+	# 起跳帧即使读到旧 floor(true) 也会因 v.y<0 不会误判落地回弹
+	if player.is_on_floor() and player.velocity.y >= 0:
+		player.jump_count = 0
+		if player.drop_through:
+			# 下穿后的"落地": 刚下穿那帧的残留地面不算(直接回 Ground 交给流程),
+			# 只有以明显下落速度(v.y>150)真正落到别的平台才结算并清除标记
+			if player.velocity.y > 150:
+				player.drop_through = false
+			return ground
+		if player.buffer_timer > 0.0:
+			# 想落地蹲下/穿板(按↓) -> 取消缓冲, 交给 Ground/crouch
 			if player.direction.y <= 0.5:
-				player.velocity.y=player.jump_speed
-				player.buffer_timer=0.0
-				player.coyote_able = false
+				player.velocity.y = player.jump_speed
+				player.buffer_timer = 0.0
+				player.cayote_able = false
 				switchState()
+				# 方案D: 触发瞬间键已松开(短按) -> 立即按可变跳高规则给矮跳(x0.6)
 				if not Input.is_action_pressed("jump"):
 					player.velocity.y *= 0.6
 				return next_state
-			# 想落地蹲下/穿板: 取消缓冲, 正常落地交给 Ground/crouch
-			player.buffer_timer=0.0
+			player.buffer_timer = 0.0
 		return ground
 	switchState()
-	current_state.process(_delta)
+	if current_state:
+		current_state.process(_delta)
 	return next_state
 
 func physics_process(_delta: float) -> PlayerState:
-	coyote_timer = coyote_timer - _delta if coyote_timer>0.0 else 0.0
-	player.velocity.x = player.direction.x*player.move_speed
-	current_state.physics_process(_delta)
+	# 空中水平移动直接由方向控制(与地面跑一致)
+	player.velocity.x = player.direction.x * player.move_speed
+	if current_state:
+		current_state.physics_process(_delta)
 	return next_state
-	
-func handle_jump(_event:InputEvent)->bool:
-	if _event.is_action_pressed("jump"):
-		if coyote_timer>0:
-			player.velocity.y= player.jump_speed
-			coyote_timer=0
-		elif player.jump_count<player.air_jump:
-			player.velocity.y=player.jump_speed
-			player.jump_count+=1
-		else:
-			player.buffer_timer = player.buffer_time
-		player.coyote_able = false
-		switchState()
-		return true
-	if(_event.is_action_released("jump")):
-		# 方案D: 松键不再取消缓冲(缓冲资格在落地时点统一结算, 消除事件顺序竞态);
-		# 这里仅保留"松键截断当前跳高"的可变跳高行为
-		player.velocity.y*=0.6
-		return true
-	return false
-	
+
 func changeState(state:PlayerState):
-	if state == current_state:
+	if state and state == current_state:
 		return
 	if current_state:
 		current_state.exit()
-	current_state=state
+	current_state = state
 	player.label.text = current_state.name
 	current_state.enter()
+	pass
+
 func switchState():
-	if player.velocity.y>=0:
+	if player.velocity.y >= 0:
 		changeState(fall)
 	else:
 		changeState(rise)
+
+func cayote_jump()->bool:
+	if cayote_timer > 0.0:
+		player.velocity.y = player.jump_speed
+		cayote_timer = 0.0
+		return true
+	return false
+
+func air_jump()->bool:
+	if player.jump_count < player.air_jump:
+		player.velocity.y = player.jump_speed
+		player.jump_count += 1
+		return true
+	return false
